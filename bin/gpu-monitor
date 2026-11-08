@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Live RTX 5090 dashboard: 12V-2x6 per-pin readings + guard verdict + GPU thermals/power
+exec watch -t -c -n 2 '
+echo "=== 12V-2x6 connector  (safe < 8 A/pin, critical >= 9.5 A) ==="
+astral-guard 2>/dev/null || echo "(astral-guard not installed)"
+sensors "astral12vhpwr-*" 2>/dev/null | grep -E "Current|Voltage" || echo "(per-pin driver not loaded)"
+echo; echo "=== GPU ==="
+nvidia-smi --query-gpu=temperature.gpu,power.draw,power.limit,clocks.sm,clocks.mem,fan.speed,utilization.gpu,memory.used,memory.total,clocks_event_reasons.active --format=csv | column -t -s,
+'

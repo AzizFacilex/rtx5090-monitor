@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GPU Monitor
+Comment=RTX 5090 per-pin connector current, temperature and power
+Exec=gnome-terminal --title="GPU Monitor" --geometry=110x30 -- @HOME@/.local/bin/gpu-monitor
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=RTX 5090 Top-Bar Monitor
+Comment=Per-pin 12V-2x6 current, GPU temperature and power in the top bar
+Exec=@HOME@/.local/bin/gpu-indicator
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5

@@ -1,0 +1,205 @@
+#!/usr/bin/python3
+"""Top-bar indicator for the ROG Astral RTX 5090.
+
+Bar label:  <max pin current>  <GPU temp>  <board power>
+Click:      per-pin current/voltage, astral-guard verdict, GPU stats, shortcuts.
+Desktop notification whenever the guard verdict gets worse.
+
+Reads only: /sys/class/hwmon (astral-hwmon), `astral-guard --json`, `nvidia-smi`.
+"""
+import glob
+import json
+import os
+import subprocess
+import threading
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("AyatanaAppIndicator3", "0.1")
+from gi.repository import AyatanaAppIndicator3 as AI  # noqa: E402
+from gi.repository import GLib, Gtk  # noqa: E402
+
+REFRESH_S = 2        # pins + GPU
+GUARD_EVERY_S = 6    # full astral-guard rule check (takes ~1 s)
+HOME = os.path.expanduser("~")
+LEVEL_RANK = {"OK": 0, "UNKNOWN": 1, "WARNING": 2, "CRITICAL": 3}
+ICON = {
+    "OK": "video-display-symbolic",
+    "UNKNOWN": "dialog-question-symbolic",
+    "WARNING": "dialog-warning-symbolic",
+    "CRITICAL": "dialog-error-symbolic",
+}
+# Smallest throttle reasons worth naming (nvidia clocks_event_reasons bitmask)
+THROTTLE_BITS = {
+    0x4: "power cap", 0x8: "HW slowdown", 0x20: "SW thermal",
+    0x40: "HW thermal", 0x80: "power brake",
+}
+
+
+def find_chip():
+    for name in glob.glob("/sys/class/hwmon/hwmon*/name"):
+        try:
+            if open(name).read().startswith("astral"):
+                return os.path.dirname(name)
+        except OSError:
+            pass
+    return None
+
+
+def read_pins(chip):
+    """Return [(amps, volts)] for pins 1..6, or None."""
+    if not chip:
+        return None
+    try:
+        return [
+            (int(open(f"{chip}/curr{i}_input").read()) / 1000,
+             int(open(f"{chip}/in{i - 1}_input").read()) / 1000)
+            for i in range(1, 7)
+        ]
+    except (OSError, ValueError):
+        return None
+
+
+def read_gpu():
+    q = "temperature.gpu,power.draw,power.limit,utilization.gpu,memory.used,memory.total,fan.speed,clocks.sm,clocks_event_reasons.active"
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", f"--query-gpu={q}", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5).stdout.strip().split("\n")[0]
+        t, p, pl, u, mu, mt, fan, clk, reasons = [x.strip() for x in out.split(",")]
+        r = int(reasons, 16)
+        throttles = [n for b, n in THROTTLE_BITS.items() if r & b]
+        return dict(temp=int(t), power=float(p), limit=float(pl), util=int(u),
+                    mem_used=int(mu), mem_total=int(mt), fan=fan, clock=int(clk),
+                    throttle=", ".join(throttles) or "none")
+    except Exception:
+        return None
+
+
+def run_guard():
+    try:
+        out = subprocess.run(["astral-guard", "--json"], capture_output=True,
+                             text=True, timeout=15).stdout
+        rep = json.loads(out)[0]
+        return rep["level"], rep.get("findings", []), rep.get("limits", {})
+    except Exception:
+        return "UNKNOWN", [], {}
+
+
+def launch(*cmd):
+    subprocess.Popen(cmd, start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class Indicator:
+    def __init__(self):
+        self.chip = find_chip()
+        self.level, self.findings, self.limits = "UNKNOWN", [], {}
+        self.ind = AI.Indicator.new("rtx5090-guard", ICON["UNKNOWN"],
+                                    AI.IndicatorCategory.HARDWARE)
+        self.ind.set_status(AI.IndicatorStatus.ACTIVE)
+        self.ind.set_title("RTX 5090 monitor")
+
+        self.menu = Gtk.Menu()
+        self.lbl_guard = self._info("Guard: …")
+        self.lbl_find = self._info("")
+        self.menu.append(Gtk.SeparatorMenuItem())
+        self.lbl_pins = [self._info(f"Pin {i}: …") for i in range(1, 7)]
+        self.lbl_total = self._info("")
+        self.menu.append(Gtk.SeparatorMenuItem())
+        self.lbl_gpu = [self._info("") for _ in range(4)]
+        self.menu.append(Gtk.SeparatorMenuItem())
+        self._action("Open GPU Monitor", lambda *_: launch(
+            "gnome-terminal", "--title=GPU Monitor", "--geometry=110x30", "--",
+            f"{HOME}/.local/bin/gpu-monitor"))
+        self._action("Open ComfyUI", lambda *_: launch(f"{HOME}/ComfyUI/launch-desktop.sh"))
+        self._action("Guard log", lambda *_: launch(
+            "gnome-terminal", "--title=astral-guard log", "--",
+            "journalctl", "-u", "astral-guard", "-u", "astral-guard-poweroff", "-f", "-n", "50"))
+        self.menu.append(Gtk.SeparatorMenuItem())
+        self._action("Quit indicator", lambda *_: Gtk.main_quit())
+        self.menu.show_all()
+        self.ind.set_menu(self.menu)
+
+        GLib.timeout_add_seconds(REFRESH_S, self.refresh)
+        GLib.timeout_add_seconds(GUARD_EVERY_S, self.guard_tick)
+        self.guard_tick()
+        self.refresh()
+
+    def _info(self, text):
+        item = Gtk.MenuItem(label=text)
+        item.set_sensitive(False)  # display-only row
+        self.menu.append(item)
+        return item
+
+    def _action(self, text, cb):
+        item = Gtk.MenuItem(label=text)
+        item.connect("activate", cb)
+        self.menu.append(item)
+
+    # ---- astral-guard (in a thread: it samples for ~1 s) ----
+    def guard_tick(self):
+        threading.Thread(target=self._guard_worker, daemon=True).start()
+        return True
+
+    def _guard_worker(self):
+        res = run_guard()
+        GLib.idle_add(self._guard_done, *res)
+
+    def _guard_done(self, level, findings, limits):
+        prev = self.level
+        self.level, self.findings, self.limits = level, findings, limits or self.limits
+        if LEVEL_RANK.get(level, 1) > LEVEL_RANK.get(prev, 1) and level in ("WARNING", "CRITICAL"):
+            detail = "; ".join(f.get("detail", "") for f in findings) or level
+            urgency = "critical" if level == "CRITICAL" else "normal"
+            launch("notify-send", "-u", urgency, "-i", "dialog-warning",
+                   f"RTX 5090 connector: {level}", detail)
+        self.ind.set_icon_full(ICON.get(level, ICON["UNKNOWN"]), level)
+        self.lbl_guard.set_label(f"12V-2x6 guard: {level}")
+        self.lbl_find.set_label(
+            "; ".join(f.get("detail", "") for f in findings)[:120] if findings
+            else "No findings — connector looks healthy" if level == "OK"
+            else "Sensor not readable (driver loaded?)")
+        return False
+
+    # ---- fast refresh ----
+    def refresh(self):
+        if not self.chip:
+            self.chip = find_chip()
+        pins = read_pins(self.chip)
+        gpu = read_gpu()
+        warn_a = self.limits.get("pin_warn_ma", 9200) / 1000
+        crit_a = self.limits.get("pin_crit_ma", 9500) / 1000
+
+        parts = []
+        if pins:
+            amps = [a for a, _ in pins]
+            peak = max(amps)
+            parts.append(f"{peak:.1f}A")
+            for i, (a, v) in enumerate(pins):
+                mark = "  ⛔" if a >= crit_a else "  ⚠" if a >= warn_a else ""
+                self.lbl_pins[i].set_label(f"Pin {i + 1}:  {a:5.2f} A   {v:5.2f} V{mark}")
+            total_w = sum(a * v for a, v in pins)
+            spread = (min(amps) / peak * 100) if peak >= 1 else 100
+            self.lbl_total.set_label(
+                f"Connector: {total_w:.0f} W   balance {spread:.0f}%   (warn {warn_a:g} A / crit {crit_a:g} A per pin)")
+        else:
+            for lbl in self.lbl_pins:
+                lbl.set_label("—")
+            self.lbl_total.set_label("Per-pin sensor not available")
+            parts.append("—A")
+
+        if gpu:
+            parts += [f"{gpu['temp']}°C", f"{gpu['power']:.0f}W"]
+            self.lbl_gpu[0].set_label(f"GPU: {gpu['temp']} °C   {gpu['power']:.0f} / {gpu['limit']:.0f} W   load {gpu['util']}%")
+            self.lbl_gpu[1].set_label(f"VRAM: {gpu['mem_used'] / 1024:.1f} / {gpu['mem_total'] / 1024:.1f} GB")
+            self.lbl_gpu[2].set_label(f"Core clock: {gpu['clock']} MHz   fan {gpu['fan']}%")
+            self.lbl_gpu[3].set_label(f"Throttling: {gpu['throttle']}")
+        self.ind.set_label("  ".join(parts), "00.0A  00°C  000W")
+        return True
+
+
+if __name__ == "__main__":
+    Indicator()
+    Gtk.main()
