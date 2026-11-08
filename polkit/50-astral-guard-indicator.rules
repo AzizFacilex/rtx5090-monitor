@@ -1,0 +1,14 @@
+// Lets an active local admin (sudo group) control the astral-guard units from the
+// top-bar indicator without a password prompt, so a pending poweroff can be
+// cancelled inside its 30 s grace period. Nothing else is granted:
+//   astral-guard.timer             start / stop   (monitoring on / off)
+//   astral-guard-poweroff.service  stop only      (cancel a pending shutdown)
+polkit.addRule(function (action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units") return;
+    if (!subject.local || !subject.active || !subject.isInGroup("sudo")) return;
+    var unit = action.lookup("unit"), verb = action.lookup("verb");
+    if (unit === "astral-guard.timer" && (verb === "start" || verb === "stop"))
+        return polkit.Result.YES;
+    if (unit === "astral-guard-poweroff.service" && verb === "stop")
+        return polkit.Result.YES;
+});

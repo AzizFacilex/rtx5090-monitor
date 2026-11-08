@@ -6,6 +6,8 @@ if ! python3 -c 'import gi; gi.require_version("AyatanaAppIndicator3","0.1")' 2>
   echo "Installing the AppIndicator GObject bindings (needs sudo)…"
   sudo apt install -y gir1.2-ayatanaappindicator3-0.1 libnotify-bin
 fi
+echo "Installing polkit rule (password-free cancel / monitoring toggle for astral-guard units only)…"
+sudo install -m 644 polkit/50-astral-guard-indicator.rules /etc/polkit-1/rules.d/50-astral-guard-indicator.rules
 command -v astral-guard >/dev/null || echo "WARNING: astral-guard not found - install https://github.com/ksokolowski/astral-hwmon first (per-pin data will show as unavailable)."
 install -Dm755 bin/gpu-indicator "$HOME/.local/bin/gpu-indicator"
 install -Dm755 bin/gpu-monitor   "$HOME/.local/bin/gpu-monitor"

@@ -87,6 +87,31 @@ def run_guard():
         return "UNKNOWN", [], {}
 
 
+TIMER = "astral-guard.timer"
+POWEROFF = "astral-guard-poweroff.service"
+
+
+def unit_state(unit):
+    try:
+        return subprocess.run(["systemctl", "is-active", unit], capture_output=True,
+                              text=True, timeout=3).stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+def systemctl(verb, unit, on_done):
+    """Run `systemctl <verb> <unit>` off the UI thread. The polkit rule installed by
+    install.sh allows this without a password for the astral-guard units only."""
+    def work():
+        r = subprocess.run(["systemctl", verb, unit], capture_output=True, text=True)
+        GLib.idle_add(on_done, r.returncode == 0, r.stderr.strip())
+    threading.Thread(target=work, daemon=True).start()
+
+
+def notify(title, body, urgency="normal", icon="dialog-information"):
+    launch("notify-send", "-u", urgency, "-i", icon, title, body)
+
+
 def launch(*cmd):
     subprocess.Popen(cmd, start_new_session=True,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -102,6 +127,10 @@ class Indicator:
         self.ind.set_title("RTX 5090 monitor")
 
         self.menu = Gtk.Menu()
+        self.monitoring = None   # astral-guard.timer active?
+        self.pending = False     # poweroff countdown running?
+        self.item_cancel = self._action("⛔ CANCEL PENDING SHUTDOWN", self.on_cancel)
+        self.item_cancel.set_no_show_all(True)
         self.lbl_guard = self._info("Guard: …")
         self.lbl_find = self._info("")
         self.menu.append(Gtk.SeparatorMenuItem())
@@ -118,7 +147,9 @@ class Indicator:
             "gnome-terminal", "--title=astral-guard log", "--",
             "journalctl", "-u", "astral-guard", "-u", "astral-guard-poweroff", "-f", "-n", "50"))
         self.menu.append(Gtk.SeparatorMenuItem())
-        self._action("Quit indicator", lambda *_: Gtk.main_quit())
+        self.item_toggle = self._action("Turn monitoring off", self.on_toggle)
+        self.menu.append(Gtk.SeparatorMenuItem())
+        self._action("Exit indicator", lambda *_: Gtk.main_quit())
         self.menu.show_all()
         self.ind.set_menu(self.menu)
 
@@ -137,6 +168,49 @@ class Indicator:
         item = Gtk.MenuItem(label=text)
         item.connect("activate", cb)
         self.menu.append(item)
+        return item
+
+    # ---- service control ----
+    def on_cancel(self, *_):
+        def done(ok, err):
+            if ok:
+                notify("Shutdown cancelled", "The pending poweroff was stopped. "
+                       "Check the cable/connector before running heavy loads again.",
+                       "critical", "dialog-warning")
+            else:
+                notify("Could not cancel shutdown", err or "run: sudo systemctl stop " + POWEROFF,
+                       "critical", "dialog-error")
+            self.poll_units()
+        systemctl("stop", POWEROFF, done)
+
+    def on_toggle(self, *_):
+        verb = "stop" if self.monitoring else "start"
+
+        def done(ok, err):
+            if not ok:
+                notify("Could not change monitoring", err, "critical", "dialog-error")
+            elif verb == "stop":
+                notify("12V-2x6 monitoring OFF",
+                       "Background checks and auto-poweroff are paused until you turn them "
+                       "back on or reboot.", "critical", "dialog-warning")
+            else:
+                notify("12V-2x6 monitoring ON", "Checks every 15 s; auto-poweroff armed.")
+            self.poll_units()
+        systemctl(verb, TIMER, done)
+
+    def poll_units(self):
+        self.monitoring = unit_state(TIMER) == "active"
+        # While the 30 s countdown runs the oneshot unit sits in "activating"
+        pending = unit_state(POWEROFF) == "activating"
+        if pending and not self.pending:
+            notify("RTX 5090: SHUTDOWN PENDING",
+                   "Critical connector verdict. Use the top-bar menu → Cancel pending shutdown "
+                   "to abort.", "critical", "dialog-error")
+        self.pending = pending
+        self.item_cancel.set_visible(pending)
+        self.item_toggle.set_label("Turn monitoring off (until reboot)" if self.monitoring
+                                   else "⚠ Monitoring is OFF — turn it on")
+        return False
 
     # ---- astral-guard (in a thread: it samples for ~1 s) ----
     def guard_tick(self):
@@ -167,6 +241,7 @@ class Indicator:
     def refresh(self):
         if not self.chip:
             self.chip = find_chip()
+        self.poll_units()
         pins = read_pins(self.chip)
         gpu = read_gpu()
         warn_a = self.limits.get("pin_warn_ma", 9200) / 1000
@@ -196,6 +271,12 @@ class Indicator:
             self.lbl_gpu[1].set_label(f"VRAM: {gpu['mem_used'] / 1024:.1f} / {gpu['mem_total'] / 1024:.1f} GB")
             self.lbl_gpu[2].set_label(f"Core clock: {gpu['clock']} MHz   fan {gpu['fan']}%")
             self.lbl_gpu[3].set_label(f"Throttling: {gpu['throttle']}")
+        if self.pending:
+            parts.insert(0, "⛔ SHUTDOWN")
+        elif self.monitoring is False:
+            parts.insert(0, "MON OFF")
+        if self.pending:
+            self.ind.set_icon_full(ICON["CRITICAL"], "shutdown pending")
         self.ind.set_label("  ".join(parts), "00.0A  00°C  000W")
         return True
 

@@ -13,6 +13,9 @@ Clicking it opens a menu with:
 - **current and voltage for each of the six pins**, total connector watts and load balance between pins
 - GPU temperature, power draw and limit, load, VRAM, clock, fan, and the active **throttle reason**
 - shortcuts to the full GPU Monitor, ComfyUI and the guard log
+- **Cancel pending shutdown**: appears, and the bar shows `⛔ SHUTDOWN`, during astral-guard's 30 s poweroff countdown
+- **Turn monitoring off/on**: stops or starts `astral-guard.timer`. Off lasts only until the next reboot, so protection always comes back, and the bar shows `MON OFF` meanwhile
+- **Exit indicator**
 
 The icon changes on a warning or a critical finding. When the verdict gets worse, a desktop notification pops up.
 
@@ -31,6 +34,13 @@ The icon changes on a warning or a critical finding. When the verdict gets worse
 ```
 
 `gpu-monitor` is the full-screen terminal version of the same data.
+
+## Permissions
+
+`install.sh` adds `/etc/polkit-1/rules.d/50-astral-guard-indicator.rules` so the menu can act without
+a password prompt. A password dialog could eat the 30 s cancel window. The rule grants an active,
+local member of the `sudo` group exactly two things: start/stop of `astral-guard.timer` and **stop** of
+`astral-guard-poweroff.service`. Nothing else.
 
 ## Safety note
 
