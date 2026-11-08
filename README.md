@@ -19,6 +19,8 @@ Clicking it opens a menu with:
 
 The icon changes on a warning or a critical finding. When the verdict gets worse, a desktop notification pops up.
 
+**Windows?** See [`windows/`](windows/README.md): the same indicator, guard and dashboard, using HWiNFO64 for the per-pin data.
+
 ## Requirements
 
 - Ubuntu with GNOME and the AppIndicator extension (`ubuntu-appindicators@ubuntu.com`, on by default)
