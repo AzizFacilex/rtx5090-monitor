@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Aziz Khalledi
+# evaluate() and DEFAULT_LIMITS: Copyright (c) 2026 Krzysztof Sokołowski (astral-hwmon, MIT)
 """Shared code for the Windows port of rtx5090-monitor.
 
 - read_pins():  per-pin 12V-2x6 current/voltage of the ROG Astral, as published by

@@ -52,3 +52,8 @@ here are the ones `astral-guard --json` reports: warning at 9.2 A per pin, criti
 The sensor measures current, not connector temperature.
 
 Tested on: ROG Astral RTX 5090 OC White (`1043:8A2E`), Ubuntu 26.04, GNOME 50, driver 615.71.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The Windows guard rules are ported from
+[astral-hwmon](https://github.com/ksokolowski/astral-hwmon)'s astral-guard (MIT, © Krzysztof Sokołowski).
